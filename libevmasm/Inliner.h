@@ -35,8 +35,20 @@ namespace solidity::evmasm
 class Inliner
 {
 public:
-	explicit Inliner(AssemblyItems& _items, size_t _runs, bool _isCreation, langutil::EVMVersion _evmVersion):
-	m_items(_items), m_runs(_runs), m_isCreation(_isCreation), m_evmVersion(_evmVersion) {}
+	explicit Inliner(
+		AssemblyItems& _items,
+		std::set<size_t> const& _tagsReferencedFromOutside,
+		size_t _runs,
+		bool _isCreation,
+		langutil::EVMVersion _evmVersion
+	):
+	m_items(_items),
+	m_tagsReferencedFromOutside(_tagsReferencedFromOutside),
+	m_runs(_runs),
+	m_isCreation(_isCreation),
+	m_evmVersion(_evmVersion)
+	{
+	}
 	virtual ~Inliner() = default;
 
 	void optimise();
@@ -49,17 +61,19 @@ private:
 	};
 
 	/// @returns the exit jump type for the block to be inlined, if a particular jump to it should be inlined, otherwise nullopt.
-	std::optional<AssemblyItem::JumpType> shouldInline(AssemblyItem const& _jump, InlinableBlock const& _block) const;
-	/// @returns true, if the full function body at @a _block that is referenced @a _pushTagCount times should be inlined, false otherwise.
-	/// @a _block should start at the first instruction after the function entry tag up to and including the return jump.
-	bool shouldInlineFullFunctionBody(ranges::span<AssemblyItem const> _block, uint64_t _pushTagCount) const;
+	std::optional<AssemblyItem::JumpType> shouldInline(size_t _tag, AssemblyItem const& _jump, InlinableBlock const& _block) const;
+	/// @returns true, if the full function at tag @a _tag with body @a _block that is referenced @a _pushTagCount times
+	/// should be inlined, false otherwise. @a _block should start at the first instruction after the function entry tag
+	/// up to and including the return jump.
+	bool shouldInlineFullFunctionBody(size_t _tag, ranges::span<AssemblyItem const> _block, uint64_t _pushTagCount) const;
 	/// @returns true, if the @a _items at @a _tag are a potential candidate for inlining.
-	bool isInlineCandidate(u256 const& _tag, ranges::span<AssemblyItem const> _items) const;
+	bool isInlineCandidate(size_t _tag, ranges::span<AssemblyItem const> _items) const;
 	/// @returns a map from tags that can potentially be inlined to the inlinable item range behind that tag and the
 	/// number of times the tag in question was referenced.
-	std::map<u256, InlinableBlock> determineInlinableBlocks(AssemblyItems const& _items) const;
+	std::map<size_t, InlinableBlock> determineInlinableBlocks(AssemblyItems const& _items) const;
 
 	AssemblyItems& m_items;
+	std::set<size_t> const& m_tagsReferencedFromOutside;
 	size_t const m_runs = 200;
 	bool const m_isCreation = false;
 	langutil::EVMVersion const m_evmVersion;

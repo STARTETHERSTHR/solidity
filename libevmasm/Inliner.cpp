@@ -42,56 +42,6 @@ using namespace std;
 using namespace solidity;
 using namespace solidity::evmasm;
 
-bool Inliner::isInlineCandidate(u256 const& _tag, ranges::span<AssemblyItem const> _items) const
-{
-	assertThrow(_items.size() > 0, OptimizerException, "");
-
-	// Only consider blocks that end in a JUMP for now. This can e.g. be extended to include transaction terminating
-	// instructions as well in the future.
-	if (_items.back() != Instruction::JUMP)
-		return false;
-
-	// Never inline tags that reference themselves.
-	for (AssemblyItem const& item: _items)
-		if (item == AssemblyItem{PushTag, _tag})
-				return false;
-
-	return true;
-}
-
-map<u256, Inliner::InlinableBlock> Inliner::determineInlinableBlocks(AssemblyItems const& _items) const
-{
-	std::map<u256, ranges::span<AssemblyItem const>> inlinableBlockItems;
-	std::map<u256, uint64_t> numPushTags;
-	std::optional<size_t> lastTag;
-	for (auto&& [index, item]: _items | ranges::views::enumerate)
-	{
-		// The number of PushTags approximates the number of calls to a block.
-		if (item.type() == PushTag)
-			++numPushTags[item.data()];
-
-		// We can only inline blocks with straight control flow that end in a jump.
-		// Using breaksCSEAnalysisBlock will hopefully allow the return jump to be optimized after inlining.
-		if (lastTag && SemanticInformation::breaksCSEAnalysisBlock(item, false))
-		{
-			ranges::span<AssemblyItem const> block = _items | ranges::views::slice(*lastTag + 1, index + 1);
-			u256 tag = _items[*lastTag].data();
-			if (isInlineCandidate(tag, block))
-				inlinableBlockItems[tag] = block;
-			lastTag.reset();
-		}
-
-		if (item.type() == Tag)
-			lastTag = index;
-	}
-
-	// Store the number of PushTags alongside the assembly items and discard tags that are never pushed.
-	map<u256, InlinableBlock> result;
-	for (auto&& [tag, items]: inlinableBlockItems)
-		if (uint64_t const* numPushes = util::valueOrNullptr(numPushTags, tag))
-			result.emplace(tag, InlinableBlock{items, *numPushes});
-	return result;
-}
 
 namespace
 {
@@ -113,12 +63,75 @@ template<typename RangeType>
 uint64_t codeSize(RangeType&& _itemRange)
 {
 	return ranges::accumulate(std::forward<RangeType>(_itemRange) | ranges::views::transform(
-			[](auto const& _item) { return _item.bytesRequired(2); }
+		[](auto const& _item) { return _item.bytesRequired(2); }
 	), 0u);
+}
+/// @returns the tag id, if @a _item is a PushTag or Tag into the current subassembly, nullopt otherwise.
+optional<size_t> getLocalTag(AssemblyItem const& _item)
+{
+	if (_item.type() != PushTag || _item.type() != Tag)
+		return nullopt;
+	auto [subId, tag] = _item.splitForeignPushTag();
+	if (subId != numeric_limits<size_t>::max())
+		return nullopt;
+	return tag;
 }
 }
 
-bool Inliner::shouldInlineFullFunctionBody(ranges::span<AssemblyItem const> _block, uint64_t _pushTagCount) const
+bool Inliner::isInlineCandidate(size_t _tag, ranges::span<AssemblyItem const> _items) const
+{
+	assertThrow(_items.size() > 0, OptimizerException, "");
+
+	// Only consider blocks that end in a JUMP for now. This can e.g. be extended to include transaction terminating
+	// instructions as well in the future.
+	if (_items.back() != Instruction::JUMP)
+		return false;
+
+	// Never inline tags that reference themselves.
+	for (AssemblyItem const& item: _items)
+		if (item.type() == PushTag)
+			if (getLocalTag(item) == _tag)
+					return false;
+
+	return true;
+}
+
+map<size_t, Inliner::InlinableBlock> Inliner::determineInlinableBlocks(AssemblyItems const& _items) const
+{
+	std::map<size_t, ranges::span<AssemblyItem const>> inlinableBlockItems;
+	std::map<size_t, uint64_t> numPushTags;
+	std::optional<size_t> lastTag;
+	for (auto&& [index, item]: _items | ranges::views::enumerate)
+	{
+		// The number of PushTags approximates the number of calls to a block.
+		if (item.type() == PushTag)
+			if (optional<size_t> tag = getLocalTag(item))
+				++numPushTags[*tag];
+
+		// We can only inline blocks with straight control flow that end in a jump.
+		// Using breaksCSEAnalysisBlock will hopefully allow the return jump to be optimized after inlining.
+		if (lastTag && SemanticInformation::breaksCSEAnalysisBlock(item, false))
+		{
+			ranges::span<AssemblyItem const> block = _items | ranges::views::slice(*lastTag + 1, index + 1);
+			if (optional<size_t> tag = getLocalTag(_items[*lastTag]))
+				if (isInlineCandidate(*tag, block))
+					inlinableBlockItems[*tag] = block;
+			lastTag.reset();
+		}
+
+		if (item.type() == Tag)
+			lastTag = index;
+	}
+
+	// Store the number of PushTags alongside the assembly items and discard tags that are never pushed.
+	map<size_t, InlinableBlock> result;
+	for (auto&& [tag, items]: inlinableBlockItems)
+		if (uint64_t const* numPushes = util::valueOrNullptr(numPushTags, tag))
+			result.emplace(tag, InlinableBlock{items, *numPushes});
+	return result;
+}
+
+bool Inliner::shouldInlineFullFunctionBody(size_t _tag, ranges::span<AssemblyItem const> _block, uint64_t _pushTagCount) const
 {
 	// Accumulate size of the inline candidate block in bytes (without the return jump).
 	uint64_t functionBodySize = codeSize(ranges::views::drop_last(_block, 1));
@@ -157,7 +170,20 @@ bool Inliner::shouldInlineFullFunctionBody(ranges::span<AssemblyItem const> _blo
 	);
 	// When inlining the execution cost beyond the actual function execution is zero,
 	// but for each call site a copy of the function is deposited.
-	bigint inlinedDepositCost = GasMeter::dataGas(numberOfCallSites * functionBodySize, m_isCreation, m_evmVersion);
+	bigint inlinedDepositCost = GasMeter::dataGas(
+		numberOfCallSites * functionBodySize,
+		m_isCreation,
+		m_evmVersion
+	);
+	// If the block is referenced from outside the current subassembly, the original function cannot be removed.
+	// Note that the function also cannot always be removed, if it is not referenced from outside, but in that case
+	// the heuristics is optimistic.
+	if (m_tagsReferencedFromOutside.count(_tag))
+		inlinedDepositCost += GasMeter::dataGas(
+			uninlinedFunctionPattern.size() + functionBodySize,
+			m_isCreation,
+			m_evmVersion
+		);
 
 	// If the estimated runtime cost over the lifetime of the contract plus the deposit cost in the uninlined case
 	// exceed the inlined deposit costs, it is beneficial to inline.
@@ -168,7 +194,7 @@ bool Inliner::shouldInlineFullFunctionBody(ranges::span<AssemblyItem const> _blo
 }
 
 
-optional<AssemblyItem::JumpType> Inliner::shouldInline(AssemblyItem const& _jump, InlinableBlock const& _block) const
+optional<AssemblyItem::JumpType> Inliner::shouldInline(size_t _tag, AssemblyItem const& _jump, InlinableBlock const& _block) const
 {
 	AssemblyItem exitJump = _block.items.back();
 	assertThrow(_jump == Instruction::JUMP && exitJump == Instruction::JUMP, OptimizerException, "");
@@ -178,7 +204,7 @@ optional<AssemblyItem::JumpType> Inliner::shouldInline(AssemblyItem const& _jump
 		exitJump.getJumpType() == AssemblyItem::JumpType::OutOfFunction
 	)
 		return
-			shouldInlineFullFunctionBody(_block.items, _block.pushTagCount) ?
+			shouldInlineFullFunctionBody(_tag, _block.items, _block.pushTagCount) ?
 			make_optional(AssemblyItem::JumpType::Ordinary) : nullopt;
 
 	return nullopt;
@@ -187,7 +213,7 @@ optional<AssemblyItem::JumpType> Inliner::shouldInline(AssemblyItem const& _jump
 
 void Inliner::optimise()
 {
-	std::map<u256, InlinableBlock> inlinableBlocks = determineInlinableBlocks(m_items);
+	std::map<size_t, InlinableBlock> inlinableBlocks = determineInlinableBlocks(m_items);
 
 	if (inlinableBlocks.empty())
 		return;
@@ -200,24 +226,28 @@ void Inliner::optimise()
 		{
 			AssemblyItem const& nextItem = *next(it);
 			if (item.type() == PushTag && nextItem == Instruction::JUMP)
-				if (auto* inlinableBlock = util::valueOrNullptr(inlinableBlocks, item.data()))
-					if (auto exitJumpType = shouldInline(nextItem, *inlinableBlock))
-					{
-						newItems += inlinableBlock->items;
-						newItems.back().setJumpType(*exitJumpType);
+			{
+				if (optional<size_t> tag = getLocalTag(item))
+					if (auto* inlinableBlock = util::valueOrNullptr(inlinableBlocks, *tag))
+						if (auto exitJumpType = shouldInline(*tag, nextItem, *inlinableBlock))
+						{
+							newItems += inlinableBlock->items;
+							newItems.back().setJumpType(*exitJumpType);
 
-						// We are removing one push tag to the block we inline.
-						--inlinableBlock->pushTagCount;
-						// We might increase the number of push tags to other blocks.
-						for (AssemblyItem const& inlinedItem: inlinableBlock->items)
-							if (inlinedItem.type() == PushTag)
-								if (auto* block = util::valueOrNullptr(inlinableBlocks, inlinedItem.data()))
-									++block->pushTagCount;
+							// We are removing one push tag to the block we inline.
+							--inlinableBlock->pushTagCount;
+							// We might increase the number of push tags to other blocks.
+							for (AssemblyItem const& inlinedItem: inlinableBlock->items)
+								if (inlinedItem.type() == PushTag)
+									if (optional<size_t> duplicatedTag = getLocalTag(inlinedItem))
+										if (auto* block = util::valueOrNullptr(inlinableBlocks, *duplicatedTag))
+											++block->pushTagCount;
 
-						// Skip the original jump to the inlined tag and continue.
-						++it;
-						continue;
-					}
+							// Skip the original jump to the inlined tag and continue.
+							++it;
+							continue;
+						}
+			}
 		}
 		newItems.emplace_back(item);
 	}

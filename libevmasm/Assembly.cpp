@@ -424,10 +424,13 @@ map<u256, u256> Assembly::optimiseInternal(
 		count = 0;
 
 		if (_settings.runInliner)
-		{
-			Inliner inliner{m_items, _settings.expectedExecutionsPerDeployment, _settings.isCreation, _settings.evmVersion};
-			inliner.optimise();
-		}
+			Inliner{
+				m_items,
+				_tagsReferencedFromOutside,
+				_settings.expectedExecutionsPerDeployment,
+				_settings.isCreation,
+				_settings.evmVersion
+			}.optimise();
 
 		if (_settings.runJumpdestRemover)
 		{

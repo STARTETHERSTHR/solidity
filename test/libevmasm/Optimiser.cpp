@@ -1507,7 +1507,7 @@ BOOST_AUTO_TEST_CASE(inliner)
 		Instruction::SWAP1,
 		jumpOutOf,
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
@@ -1530,7 +1530,7 @@ BOOST_AUTO_TEST_CASE(inliner_no_inline_type)
 		Instruction::SWAP1,
 		Instruction::JUMP,
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
@@ -1556,7 +1556,7 @@ BOOST_AUTO_TEST_CASE(inliner_no_inline)
 		Instruction::JUMPI,
 		Instruction::JUMP,
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
@@ -1588,7 +1588,7 @@ BOOST_AUTO_TEST_CASE(inliner_single_jump)
 		AssemblyItem(Tag, 2),
 		jumpOutOf,
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
@@ -1609,7 +1609,7 @@ BOOST_AUTO_TEST_CASE(inliner_end_of_bytecode)
 		Instruction::STOP,
 		AssemblyItem(Tag, 2),
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
@@ -1635,7 +1635,7 @@ BOOST_AUTO_TEST_CASE(inliner_cse_break)
 		Instruction::STOP, // CSE breaking instruction
 		jumpOutOf
 	};
-	Inliner inliner(items, 5, false, {});
+	Inliner inliner(items, {}, 5, false, {});
 	inliner.optimise();
 	BOOST_CHECK_EQUAL_COLLECTIONS(
 		items.begin(), items.end(),
